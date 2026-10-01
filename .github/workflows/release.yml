@@ -1,0 +1,88 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  check-version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify tag matches workspace version
+        id: check
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          version=$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')
+          echo "tag=$tag Cargo.toml version=$version"
+          if [ "$tag" != "$version" ]; then
+            echo "::error::Tag '$tag' does not match Cargo.toml version '$version'"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  linux:
+    needs: check-version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - name: Run tests
+        run: cargo test --workspace --locked
+        timeout-minutes: 30
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: Install cargo-zigbuild
+        run: pip install cargo-zigbuild
+      - name: Build against glibc 2.17
+        run: cargo zigbuild --release --locked -p numen-miner --target x86_64-unknown-linux-gnu.2.17
+        timeout-minutes: 30
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: target/x86_64-unknown-linux-gnu/release/numen-miner
+
+  windows:
+    needs: check-version
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - name: Run tests
+        run: cargo test --workspace --locked
+        timeout-minutes: 30
+      - name: Build
+        run: cargo build --release --locked -p numen-miner
+        timeout-minutes: 30
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: target/release/numen-miner.exe
+
+  publish:
+    needs: [check-version, linux, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Package
+        env:
+          VERSION: ${{ needs.check-version.outputs.version }}
+        run: scripts/package.sh "$VERSION" artifacts/linux/numen-miner artifacts/windows/numen-miner.exe dist
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: numen-miner v${{ needs.check-version.outputs.version }}
+          draft: true
+          prerelease: true
+          generate_release_notes: true
+          files: dist/*

@@ -1,0 +1,23 @@
+[package]
+name = "numen-harness"
+description = "Prices a kernel variant as throughput times retention, against the canonical pipeline."
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+edition.workspace = true
+publish = false
+
+[[bin]]
+name = "numen-harness"
+path = "src/main.rs"
+
+[dependencies]
+numen-kernel.workspace = true
+poscan = { workspace = true, features = ["std"] }
+obj-asteroid.workspace = true
+spectral3d.workspace = true
+primitive-types = { workspace = true, features = ["std"] }
+clap.workspace = true
+hex.workspace = true
+rayon.workspace = true
+libm.workspace = true

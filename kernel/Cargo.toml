@@ -1,0 +1,14 @@
+[package]
+name = "numen-kernel"
+description = "PoScan mining pipeline, one source compiled for the host, NVIDIA and AMD GPUs."
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+libm.workspace = true
+rand_pcg.workspace = true
+rand_core.workspace = true
+sha2.workspace = true

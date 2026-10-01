@@ -1,0 +1,65 @@
+[workspace]
+members = ["kernel", "miner", "harness"]
+resolver = "2"
+
+[workspace.package]
+version = "1.0.0"
+license = "MIT"
+authors = ["numen-network"]
+edition = "2024"
+
+[workspace.dependencies]
+numen-kernel = { path = "./kernel" }
+
+# Pinned exactly as the chain pins them. A libm bump shifts transcendentals and
+# moves every feature, so the version is part of the protocol surface.
+libm = "=0.2.16"
+rand_pcg = { version = "=0.10.2", default-features = false }
+rand_core = { version = "=0.10.1", default-features = false }
+sha2 = { version = "0.11.0", default-features = false }
+
+# Canonical reference pipeline, the yardstick the kernel is measured against.
+# Pinned to one chain revision, since a pipeline change moves every feature and
+# the harness would be grading against the wrong answer. Bump the rev together
+# with the chain.
+poscan = { git = "https://github.com/motoZ-crypto/numen.git", rev = "7a34cd90a074272dd9155beb8d816e8afeeba6c8", default-features = false }
+obj-asteroid = { git = "https://github.com/motoZ-crypto/numen.git", rev = "7a34cd90a074272dd9155beb8d816e8afeeba6c8", default-features = false }
+spectral3d = { git = "https://github.com/numen-network/spectral3d.git", rev = "af77fd9" }
+primitive-types = { version = "0.13.1", default-features = false, features = ["codec"] }
+codec = { version = "3.7.4", default-features = false, package = "parity-scale-codec" }
+
+adlx = "0.0.0-alpha.1"
+anyhow = "1.0"
+axum = { version = "0.8.9", default-features = false, features = ["tokio", "http1", "json"] }
+clap = { version = "4.6.1", features = ["derive", "env"] }
+comfy-table = { version = "8.0.1", default-features = false }
+# cuda-11040 is the oldest driver API cudarc offers. R470 is the terminal
+# driver branch for Kepler, so raising this floor cuts those cards off.
+cudarc = { version = "0.19.9", default-features = false, features = ["std", "driver", "nvrtc", "dynamic-loading", "cuda-11040"] }
+getrandom = "0.2.17"
+hex = "0.4.3"
+include_bytes_aligned = "0.2.0"
+jsonrpsee = { version = "0.26.0", features = ["ws-client"] }
+libc = "0.2"
+libloading = "0.9.0"
+log = "0.4.34"
+nvml-wrapper = "0.13.0"
+env_logger = "0.11"
+rayon = "1.10"
+reqwest = { version = "0.13.5", default-features = false, features = ["json"] }
+rustls-platform-verifier = "0.5.3"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0.149"
+thread-priority = "3.1.1"
+tokio = { version = "1.45", features = ["rt-multi-thread", "macros", "signal", "time", "sync", "net", "io-util"] }
+# ring is the provider the websocket client already brings. The default
+# aws-lc-rs would add a second one, and rustls then can't pick either.
+tokio-rustls = { version = "0.26.4", default-features = false, features = ["ring", "tls12"] }
+vergen-gitcl = "10.0.1"
+windows-sys = { version = "0.61.2", features = ["Win32_Devices_DeviceAndDriverInstallation", "Win32_Devices_Properties", "Win32_Foundation", "Win32_System_SystemInformation", "Win32_System_Threading"] }
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"

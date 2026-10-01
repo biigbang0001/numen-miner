@@ -1,0 +1,48 @@
+[package]
+name = "numen-miner"
+description = "PoScan miner for the Numen chain, with CPU, CUDA and HIP backends."
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+edition.workspace = true
+publish = false
+
+[[bin]]
+name = "numen-miner"
+path = "src/main.rs"
+
+[dependencies]
+numen-kernel.workspace = true
+primitive-types = { workspace = true, features = ["std", "serde"] }
+codec = { workspace = true, features = ["std"] }
+anyhow.workspace = true
+axum.workspace = true
+clap.workspace = true
+comfy-table.workspace = true
+cudarc.workspace = true
+env_logger.workspace = true
+getrandom.workspace = true
+hex.workspace = true
+include_bytes_aligned.workspace = true
+jsonrpsee.workspace = true
+libloading.workspace = true
+log.workspace = true
+nvml-wrapper.workspace = true
+reqwest.workspace = true
+rustls-platform-verifier.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thread-priority.workspace = true
+tokio.workspace = true
+tokio-rustls.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+adlx.workspace = true
+windows-sys.workspace = true
+
+[build-dependencies]
+anyhow.workspace = true
+vergen-gitcl.workspace = true
