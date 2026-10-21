@@ -58,6 +58,10 @@ To mine at a pool instead, pick one and follow its setup. No node needed.
   ```
   ./numen-miner --url http://stratum.diffpool.xyz:8010/rpc/<YOUR_ADDRESS>/<RIG_NAME>
   ```
+- [Nitopool](https://pool.nitopool.online/pools/numenpplnsbf)
+  ```
+  ./numen-miner -o stratum+ssl://stratum.nitopool.online:3027 -u <YOUR_ADDRESS>.<RIG_NAME>
+  ```
 
 The release archives carry each of these as a script named after its pool, `.bat` on Windows and `.sh` on Linux. Set `WALLET` in yours and run it.
 
