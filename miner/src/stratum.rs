@@ -368,7 +368,10 @@ async fn read(reader: &mut Reader) -> Result<Message> {
 
 #[cfg(test)]
 mod tests {
-    use super::Login;
+    use super::{Login, Pool, Session};
+    use serde_json::{Value, json};
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    use tokio::net::TcpListener;
 
     #[test]
     fn device_worker_keeps_the_rig_name() {
@@ -386,5 +389,56 @@ mod tests {
             pass: "x".into(),
         };
         assert_eq!(login.for_device("cpu").user, "wallet.cpu");
+    }
+
+    #[tokio::test]
+    async fn separate_sessions_authorize_their_derived_workers() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let mut users = Vec::new();
+            for connection in 0..2u64 {
+                let (stream, _) = listener.accept().await.unwrap();
+                let (reader, mut writer) = tokio::io::split(stream);
+                let mut lines = BufReader::new(reader).lines();
+
+                let subscribe: Value =
+                    serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+                assert_eq!(subscribe["method"], "mining.subscribe");
+                let extranonce = format!("{:016x}", connection + 1);
+                let reply = json!({"id": 0, "result": [null, extranonce, 4], "error": null});
+                writer
+                    .write_all(format!("{reply}\n").as_bytes())
+                    .await
+                    .unwrap();
+
+                let authorize: Value =
+                    serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+                assert_eq!(authorize["method"], "mining.authorize");
+                users.push(authorize["params"][0].as_str().unwrap().to_string());
+                let reply = json!({"id": 1, "result": true, "error": null});
+                writer
+                    .write_all(format!("{reply}\n").as_bytes())
+                    .await
+                    .unwrap();
+            }
+            users
+        });
+
+        let pool = Pool::new(&address.to_string(), false).unwrap();
+        let base = Login {
+            user: "wallet.rig".into(),
+            pass: "x".into(),
+        };
+        let cpu = base.for_device("cpu");
+        let gpu = base.for_device("gpu0");
+        let (cpu_session, gpu_session) =
+            tokio::join!(Session::open(&pool, &cpu), Session::open(&pool, &gpu));
+        assert!(cpu_session.is_ok());
+        assert!(gpu_session.is_ok());
+
+        let mut users = server.await.unwrap();
+        users.sort();
+        assert_eq!(users, ["wallet.rig-cpu", "wallet.rig-gpu0"]);
     }
 }

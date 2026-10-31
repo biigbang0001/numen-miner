@@ -102,3 +102,37 @@ async fn summary(State(api): State<Api>) -> Json<Summary> {
         devices,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::Shared;
+    use std::sync::Arc;
+
+    fn group(name: &str, worker: &str, difficulty: u64) -> Arc<Shared> {
+        let shared = Arc::new(Shared::new());
+        shared.meter(name.into(), String::new(), None);
+        shared.set_worker(Some(worker.into()));
+        shared.set_task([0; 32], difficulty.into(), 0);
+        shared
+    }
+
+    #[tokio::test]
+    async fn summary_keeps_worker_and_difficulty_per_device() {
+        let farm = Farm::new(vec![
+            group("cpu", "rig-cpu", 11),
+            group("gpu0", "rig-gpu0", 29),
+        ]);
+        let Json(summary) = summary(State(Api {
+            farm,
+            started: Instant::now(),
+        }))
+        .await;
+
+        assert_eq!(summary.devices.len(), 2);
+        assert_eq!(summary.devices[0].worker.as_deref(), Some("rig-cpu"));
+        assert_eq!(summary.devices[0].difficulty.as_deref(), Some("11"));
+        assert_eq!(summary.devices[1].worker.as_deref(), Some("rig-gpu0"));
+        assert_eq!(summary.devices[1].difficulty.as_deref(), Some("29"));
+    }
+}
