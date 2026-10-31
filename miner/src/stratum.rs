@@ -8,7 +8,9 @@ use std::collections::{HashMap, VecDeque};
 use std::fmt;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
-use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader, Lines, ReadHalf, WriteHalf};
+use tokio::io::{
+    AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader, Lines, ReadHalf, WriteHalf,
+};
 use tokio::net::TcpStream;
 use tokio::runtime::Handle;
 use tokio_rustls::TlsConnector;
@@ -40,21 +42,52 @@ impl Pool {
     pub fn new(address: &str, tls: bool) -> Result<Pool> {
         let (host, port) = address.rsplit_once(':').context("expected host:port")?;
         let port = port.parse().with_context(|| format!("bad port {port}"))?;
-        Ok(Pool { host: host.to_string(), port, tls })
+        Ok(Pool {
+            host: host.to_string(),
+            port,
+            tls,
+        })
     }
 }
 
 impl fmt::Display for Pool {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let scheme = if self.tls { "stratum+ssl" } else { "stratum+tcp" };
+        let scheme = if self.tls {
+            "stratum+ssl"
+        } else {
+            "stratum+tcp"
+        };
         write!(f, "{scheme}://{}:{}", self.host, self.port)
     }
 }
 
 /// The worker a pool credits, as `WALLET.WORKER`, and its password.
+#[derive(Clone)]
 pub struct Login {
     pub user: String,
     pub pass: String,
+}
+
+impl Login {
+    pub fn for_device(&self, device: &str) -> Login {
+        let user = match self.user.split_once('.') {
+            Some((wallet, worker)) if !worker.is_empty() => format!("{wallet}.{worker}-{device}"),
+            Some((wallet, _)) => format!("{wallet}.{device}"),
+            None => format!("{}.{device}", self.user),
+        };
+        Login {
+            user,
+            pass: self.pass.clone(),
+        }
+    }
+
+    pub fn worker(&self) -> Option<String> {
+        self.user
+            .split_once('.')
+            .map(|(_, worker)| worker)
+            .filter(|worker| !worker.is_empty())
+            .map(str::to_string)
+    }
 }
 
 /// A pool connection, plain or TLS.
@@ -86,7 +119,12 @@ impl Message {
         }
         // rplant sends [code, message, data] and ninjaraider {code, message}.
         let reason = self.error.get(1).or_else(|| self.error.get("message"));
-        bail!("{}", reason.and_then(Value::as_str).map_or_else(|| self.error.to_string(), str::to_string))
+        bail!(
+            "{}",
+            reason
+                .and_then(Value::as_str)
+                .map_or_else(|| self.error.to_string(), str::to_string)
+        )
     }
 }
 
@@ -131,13 +169,18 @@ impl Session {
         send(&mut writer, 0, "mining.subscribe", json!([AGENT])).await?;
         let subscribed = read(&mut reader).await?.outcome()?;
         let (_, extranonce, _): (Value, String, Value) = serde_json::from_value(subscribed)?;
-        let extranonce = <[u8; 8]>::from_hex(&extranonce).with_context(|| format!("extranonce {extranonce}"))?;
+        let extranonce =
+            <[u8; 8]>::from_hex(&extranonce).with_context(|| format!("extranonce {extranonce}"))?;
 
         let out = Outbox {
             writer: tokio::sync::Mutex::new(writer),
             user: login.user.clone(),
             extranonce: u64::from_be_bytes(extranonce),
-            book: Mutex::new(Book { next_id: 1, jobs: VecDeque::new(), pending: HashMap::new() }),
+            book: Mutex::new(Book {
+                next_id: 1,
+                jobs: VecDeque::new(),
+                pending: HashMap::new(),
+            }),
         };
         let mut session = Session {
             reader,
@@ -145,8 +188,15 @@ impl Session {
             difficulty: U256::one(),
             out: Arc::new(out),
         };
-        let id = session.out.request("mining.authorize", json!([login.user, login.pass])).await?;
-        ensure!(session.answer(id).await? == true, "login {} refused", login.user);
+        let id = session
+            .out
+            .request("mining.authorize", json!([login.user, login.pass]))
+            .await?;
+        ensure!(
+            session.answer(id).await? == true,
+            "login {} refused",
+            login.user
+        );
         Ok(session)
     }
 
@@ -186,7 +236,9 @@ impl Session {
 
     /// Take a line from the pool, a verdict on a share or a push.
     fn receive(&mut self, message: Message, shared: &Shared) -> Result<()> {
-        let pending = message.id.and_then(|id| self.out.book().pending.remove(&id));
+        let pending = message
+            .id
+            .and_then(|id| self.out.book().pending.remove(&id));
         if let Some((meter, sent)) = pending {
             match message.outcome() {
                 Ok(result) => shared.verdict(&meter, sent, result == true, None),
@@ -207,7 +259,8 @@ impl Session {
                 Ok(false)
             }
             Some("mining.notify") => {
-                let (id, pre_hash, clean): (String, H256, bool) = serde_json::from_value(message.params)?;
+                let (id, pre_hash, clean): (String, H256, bool) =
+                    serde_json::from_value(message.params)?;
                 self.out.book().open(pre_hash.0, id, clean);
                 Ok(true)
             }
@@ -279,7 +332,10 @@ impl Book {
     /// Book a share as pending before it goes out, so its verdict always
     /// finds it. None when its job is closed.
     fn file(&mut self, share: Share, user: &str, extranonce: u64) -> Option<(u64, Value)> {
-        let job = self.jobs.iter().find(|(pre_hash, _)| *pre_hash == share.pre_hash);
+        let job = self
+            .jobs
+            .iter()
+            .find(|(pre_hash, _)| *pre_hash == share.pre_hash);
         let Some((_, job)) = job.filter(|_| share.nonce[3] == extranonce) else {
             log::debug!("{} share for a closed job dropped", share.meter.name);
             return None;
@@ -303,6 +359,32 @@ async fn send(writer: &mut Writer, id: u64, method: &str, params: Value) -> Resu
 }
 
 async fn read(reader: &mut Reader) -> Result<Message> {
-    let line = reader.next_line().await?.context("pool closed the connection")?;
+    let line = reader
+        .next_line()
+        .await?
+        .context("pool closed the connection")?;
     serde_json::from_str(&line).with_context(|| format!("pool sent {line}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Login;
+
+    #[test]
+    fn device_worker_keeps_the_rig_name() {
+        let login = Login {
+            user: "wallet.rig".into(),
+            pass: "x".into(),
+        };
+        assert_eq!(login.for_device("gpu0").user, "wallet.rig-gpu0");
+    }
+
+    #[test]
+    fn device_worker_adds_a_worker_when_missing() {
+        let login = Login {
+            user: "wallet".into(),
+            pass: "x".into(),
+        };
+        assert_eq!(login.for_device("cpu").user, "wallet.cpu");
+    }
 }

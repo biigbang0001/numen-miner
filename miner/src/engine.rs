@@ -21,6 +21,7 @@ pub struct Job {
 pub struct ActiveTask {
     pub pre_hash: [u8; 32],
     pub threshold: [u8; 32],
+    pub difficulty: U256,
     pub extranonce: u64,
 }
 
@@ -43,6 +44,7 @@ const SAMPLES: usize = 60;
 pub struct Meter {
     pub name: String,
     pub bus: String,
+    worker: Mutex<Option<String>>,
     scanned: AtomicU64,
     accepted: AtomicU64,
     rejected: AtomicU64,
@@ -64,10 +66,14 @@ impl Meter {
         Meter {
             name,
             bus,
+            worker: Mutex::new(None),
             scanned: AtomicU64::new(0),
             accepted: AtomicU64::new(0),
             rejected: AtomicU64::new(0),
-            samples: Mutex::new(Samples { ring: [(now, 0); SAMPLES], next: 0 }),
+            samples: Mutex::new(Samples {
+                ring: [(now, 0); SAMPLES],
+                next: 0,
+            }),
             sensor,
             reading: Mutex::new(Reading::default()),
             hot_since: Mutex::new(None),
@@ -77,6 +83,14 @@ impl Meter {
 
     pub fn add(&self, n: u64) {
         self.scanned.fetch_add(n, Ordering::Relaxed);
+    }
+
+    pub fn set_worker(&self, worker: Option<String>) {
+        *self.worker.lock().expect("worker lock") = worker;
+    }
+
+    pub fn worker(&self) -> Option<String> {
+        self.worker.lock().expect("worker lock").clone()
     }
 
     pub fn scanned(&self) -> u64 {
@@ -171,7 +185,12 @@ impl Shared {
         if guard.as_ref().is_none_or(|t| t.pre_hash != pre_hash) {
             self.cursor.store(0, Ordering::Relaxed);
         }
-        *guard = Some(ActiveTask { pre_hash, threshold, extranonce });
+        *guard = Some(ActiveTask {
+            pre_hash,
+            threshold,
+            difficulty,
+            extranonce,
+        });
     }
 
     pub fn next_job(&self, count: u64) -> Option<Job> {
@@ -196,6 +215,20 @@ impl Shared {
         self.meters.lock().expect("meter lock").clone()
     }
 
+    pub fn difficulty(&self) -> Option<U256> {
+        self.task
+            .read()
+            .expect("task lock")
+            .as_ref()
+            .map(|task| task.difficulty)
+    }
+
+    pub fn set_worker(&self, worker: Option<String>) {
+        for meter in self.meters() {
+            meter.set_worker(worker.clone());
+        }
+    }
+
     /// Hashes per second across every device.
     pub fn rate(&self, now: Instant) -> f64 {
         self.meters().iter().map(|meter| meter.rate(now)).sum()
@@ -203,7 +236,9 @@ impl Shared {
 
     /// Shares the upstream accepted and rejected, over every device.
     pub fn verdicts(&self) -> (u64, u64) {
-        self.meters().iter().fold((0, 0), |(a, r), m| (a + m.accepted(), r + m.rejected()))
+        self.meters()
+            .iter()
+            .fold((0, 0), |(a, r), m| (a + m.accepted(), r + m.rejected()))
     }
 
     pub fn stop(&self) {
@@ -229,7 +264,12 @@ impl Shared {
     /// Send a hit upstream from the worker that found it. With no link up the
     /// hit is lost, as it would be stale by the time one came back.
     pub fn found(self: &Arc<Self>, meter: &Arc<Meter>, job: &Job, hit: Candidate) {
-        let share = Share { meter: meter.clone(), pre_hash: job.pre_hash, nonce: hit.nonce, work: hit.work };
+        let share = Share {
+            meter: meter.clone(),
+            pre_hash: job.pre_hash,
+            nonce: hit.nonce,
+            work: hit.work,
+        };
         match &*self.submit.read().expect("submit lock") {
             Some(submit) => submit(self, share),
             None => log::debug!("{} hit dropped with no upstream", meter.name),
@@ -246,8 +286,65 @@ impl Shared {
         };
         counter.fetch_add(1, Ordering::Relaxed);
         let (a, r) = self.verdicts();
-        let reason = reason.map(|reason| format!(", {reason}")).unwrap_or_default();
-        log::info!("{} {verdict} ({a}/{r}) {} ms{reason}", meter.name, sent.elapsed().as_millis());
+        let reason = reason
+            .map(|reason| format!(", {reason}"))
+            .unwrap_or_default();
+        log::info!(
+            "{} {verdict} ({a}/{r}) {} ms{reason}",
+            meter.name,
+            sent.elapsed().as_millis()
+        );
+    }
+}
+
+/// The independently scheduled device groups in one miner process. A group
+/// owns one upstream session, so a pool can apply VarDiff independently.
+#[derive(Clone)]
+pub struct Farm {
+    groups: Arc<Vec<Arc<Shared>>>,
+}
+
+impl Farm {
+    pub fn new(groups: Vec<Arc<Shared>>) -> Self {
+        Farm {
+            groups: Arc::new(groups),
+        }
+    }
+
+    pub fn groups(&self) -> &[Arc<Shared>] {
+        &self.groups
+    }
+
+    pub fn meters(&self) -> Vec<Arc<Meter>> {
+        self.groups
+            .iter()
+            .flat_map(|group| group.meters())
+            .collect()
+    }
+
+    pub fn set_task(&self, pre_hash: [u8; 32], difficulty: U256, extranonce: u64) {
+        for group in self.groups.iter() {
+            group.set_task(pre_hash, difficulty, extranonce);
+        }
+    }
+
+    pub fn rate(&self, now: Instant) -> f64 {
+        self.groups.iter().map(|group| group.rate(now)).sum()
+    }
+
+    pub fn verdicts(&self) -> (u64, u64) {
+        self.groups
+            .iter()
+            .fold((0, 0), |(accepted, rejected), group| {
+                let (a, r) = group.verdicts();
+                (accepted + a, rejected + r)
+            })
+    }
+
+    pub fn stop(&self) {
+        for group in self.groups.iter() {
+            group.stop();
+        }
     }
 }
 
@@ -257,7 +354,10 @@ impl Shared {
 /// the same question as `work <= U256::MAX / difficulty`. Dividing once per
 /// task turns the inner loop test into a byte comparison.
 fn threshold(difficulty: U256) -> [u8; 32] {
-    U256::MAX.checked_div(difficulty).unwrap_or(U256::MAX).to_big_endian()
+    U256::MAX
+        .checked_div(difficulty)
+        .unwrap_or(U256::MAX)
+        .to_big_endian()
 }
 
 /// Rigs mining through one node receive the same pre hash, so each scans

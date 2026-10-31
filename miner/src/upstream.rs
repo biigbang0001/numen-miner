@@ -35,7 +35,9 @@ impl FromStr for Endpoint {
     type Err = anyhow::Error;
 
     fn from_str(url: &str) -> Result<Self> {
-        let (scheme, address) = url.split_once("://").context("expected a URL such as ws://127.0.0.1:9944")?;
+        let (scheme, address) = url
+            .split_once("://")
+            .context("expected a URL such as ws://127.0.0.1:9944")?;
         Ok(match scheme {
             "ws" | "wss" => Endpoint::Node(url.to_string()),
             "http" => Endpoint::Http(url.to_string()),
@@ -52,6 +54,12 @@ impl fmt::Display for Endpoint {
             Endpoint::Node(url) | Endpoint::Http(url) => f.write_str(url),
             Endpoint::Stratum(pool) => pool.fmt(f),
         }
+    }
+}
+
+impl Endpoint {
+    pub fn is_stratum(&self) -> bool {
+        matches!(self, Endpoint::Stratum(_))
     }
 }
 
@@ -73,17 +81,48 @@ impl Link {
     }
 }
 
+#[derive(Clone)]
 pub struct Upstream {
     endpoints: Vec<Endpoint>,
     login: Login,
+    label: String,
 }
 
 impl Upstream {
     pub fn new(endpoints: Vec<Endpoint>, user: Option<String>, pass: String) -> Result<Self> {
-        let stratum = endpoints.iter().any(|endpoint| matches!(endpoint, Endpoint::Stratum(_)));
-        ensure!(user.is_some() || !stratum, "stratum pools need --user WALLET.WORKER");
-        let login = Login { user: user.unwrap_or_default(), pass };
-        Ok(Upstream { endpoints, login })
+        let stratum = endpoints
+            .iter()
+            .any(|endpoint| matches!(endpoint, Endpoint::Stratum(_)));
+        ensure!(
+            user.is_some() || !stratum,
+            "stratum pools need --user WALLET.WORKER"
+        );
+        let login = Login {
+            user: user.unwrap_or_default(),
+            pass,
+        };
+        Ok(Upstream {
+            endpoints,
+            login,
+            label: "rig".into(),
+        })
+    }
+
+    pub fn for_device(&self, device: &str) -> Self {
+        let mut upstream = self.clone();
+        if upstream.endpoints.iter().any(Endpoint::is_stratum) {
+            upstream.login = upstream.login.for_device(device);
+        }
+        upstream.label = device.into();
+        upstream
+    }
+
+    pub fn worker(&self) -> Option<String> {
+        if self.endpoints.iter().any(Endpoint::is_stratum) {
+            self.login.worker()
+        } else {
+            None
+        }
     }
 
     /// Mine through the first endpoint that answers. A link that drops is
@@ -104,7 +143,7 @@ impl Upstream {
                     }
                 },
             };
-            log::info!("connected to {endpoint}");
+            log::info!("{} connected to {endpoint}", self.label);
             let error = tokio::select! {
                 error = link.run(shared) => Some(error),
                 first = self.failback(), if index > 0 => {
@@ -115,7 +154,7 @@ impl Upstream {
             };
             shared.detach();
             if let Some(error) = error {
-                log::warn!("{endpoint}: {error:#}");
+                log::warn!("{} {endpoint}: {error:#}", self.label);
                 tokio::time::sleep(BACKOFF).await;
             }
         }
@@ -126,7 +165,7 @@ impl Upstream {
         for _ in 0..=RETRIES {
             match self.open(endpoint).await {
                 Ok(link) => return Some(link),
-                Err(e) => log::warn!("connect to {endpoint}: {e:#}"),
+                Err(e) => log::warn!("{} connect to {endpoint}: {e:#}", self.label),
             }
             tokio::time::sleep(BACKOFF).await;
         }
@@ -139,10 +178,14 @@ impl Upstream {
             anyhow::Ok(match endpoint {
                 Endpoint::Node(url) => Link::Node(rpc::Node::open(url).await?),
                 Endpoint::Http(url) => Link::Http(rpc::Http::open(url).await?),
-                Endpoint::Stratum(pool) => Link::Stratum(stratum::Session::open(pool, &self.login).await?),
+                Endpoint::Stratum(pool) => {
+                    Link::Stratum(stratum::Session::open(pool, &self.login).await?)
+                }
             })
         };
-        tokio::time::timeout(ATTEMPT, open).await.map_err(|_| anyhow!("no answer in {} s", ATTEMPT.as_secs()))?
+        tokio::time::timeout(ATTEMPT, open)
+            .await
+            .map_err(|_| anyhow!("no answer in {} s", ATTEMPT.as_secs()))?
     }
 
     /// A link to the first endpoint, once it answers again.

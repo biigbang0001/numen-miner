@@ -1,6 +1,6 @@
 use anyhow::{Result, ensure};
 use clap::builder::BoolishValueParser;
-use clap::{ArgGroup, Args, Parser, Subcommand};
+use clap::{ArgGroup, Args, Parser, Subcommand, ValueEnum};
 use std::num::ParseIntError;
 use std::ops::RangeInclusive;
 use std::path::PathBuf;
@@ -26,12 +26,23 @@ pub struct Cli {
     /// a node, `http` a pool serving the node's RPC such as DiffPool, and
     /// `stratum+tcp` and `stratum+ssl` a stratum pool. Repeat the flag or
     /// separate them with commas.
-    #[arg(long, short = 'o', env = "NUMEN_MINER_URL", value_delimiter = ',', required = true)]
+    #[arg(
+        long,
+        short = 'o',
+        env = "NUMEN_MINER_URL",
+        value_delimiter = ',',
+        required = true
+    )]
     pub url: Vec<Endpoint>,
 
     /// Stratum login, your wallet address and a worker name as
     /// `WALLET.WORKER`.
-    #[arg(long, short = 'u', env = "NUMEN_MINER_USER", value_name = "WALLET.WORKER")]
+    #[arg(
+        long,
+        short = 'u',
+        env = "NUMEN_MINER_USER",
+        value_name = "WALLET.WORKER"
+    )]
     pub user: Option<String>,
 
     /// Stratum password. rplant reads `start=N` here as the starting
@@ -39,11 +50,22 @@ pub struct Cli {
     #[arg(long, short = 'p', env = "NUMEN_MINER_PASS", default_value = "x")]
     pub pass: String,
 
+    /// How devices share upstream connections. `auto` gives every device its
+    /// own connection when a Stratum URL is configured; `rig` keeps one
+    /// connection for the whole process; `device` always separates them.
+    #[arg(long, env = "NUMEN_MINER_WORKER_MODE", default_value = "auto")]
+    pub worker_mode: WorkerMode,
+
     #[command(flatten)]
     pub rig: Rig,
 
     /// Seconds between speed reports.
-    #[arg(long, short = 'i', env = "NUMEN_MINER_REPORT_INTERVAL", default_value_t = 60)]
+    #[arg(
+        long,
+        short = 'i',
+        env = "NUMEN_MINER_REPORT_INTERVAL",
+        default_value_t = 60
+    )]
     pub report_interval: u64,
 
     /// Port for the read-only `GET /summary` API on 127.0.0.1.
@@ -61,14 +83,37 @@ pub struct Cli {
     pub temp_start: Option<u32>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub enum WorkerMode {
+    Auto,
+    Rig,
+    Device,
+}
+
+impl WorkerMode {
+    pub fn per_device(self, endpoints: &[Endpoint]) -> bool {
+        match self {
+            WorkerMode::Auto => endpoints.iter().any(Endpoint::is_stratum),
+            WorkerMode::Rig => false,
+            WorkerMode::Device => true,
+        }
+    }
+}
+
 impl Cli {
     pub fn temp_limit(&self) -> Result<Option<TempLimit>> {
         let Some(stop) = self.temp_stop else {
             return Ok(None);
         };
         let start = self.temp_start.unwrap_or(stop.saturating_sub(10));
-        ensure!(start < stop, "--temp-start {start} must be below --temp-stop {stop}");
-        Ok(Some(TempLimit { stop: f64::from(stop), start: f64::from(start) }))
+        ensure!(
+            start < stop,
+            "--temp-start {start} must be below --temp-stop {stop}"
+        );
+        Ok(Some(TempLimit {
+            stop: f64::from(stop),
+            start: f64::from(start),
+        }))
     }
 }
 
@@ -115,11 +160,18 @@ impl CpuChoice {
     pub fn cpu_threads(&self) -> Vec<Option<usize>> {
         if self.cpu_affinity.is_empty() {
             let threads = self.threads.unwrap_or_else(|| {
-                std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1)
+                std::thread::available_parallelism()
+                    .map(|n| n.get())
+                    .unwrap_or(1)
             });
             return vec![None; threads];
         }
-        self.cpu_affinity.iter().cloned().flatten().map(Some).collect()
+        self.cpu_affinity
+            .iter()
+            .cloned()
+            .flatten()
+            .map(Some)
+            .collect()
     }
 }
 
@@ -145,7 +197,9 @@ pub struct GpuChoice {
 
 impl GpuChoice {
     pub fn mines_on_gpu(&self, number: usize) -> bool {
-        self.devices.as_ref().is_none_or(|devices| devices.contains(&number))
+        self.devices
+            .as_ref()
+            .is_none_or(|devices| devices.contains(&number))
     }
 
     /// Nonces per launch for the mining GPU at `position`, or `None` to size
@@ -202,6 +256,33 @@ pub struct Dump {
 /// one lands in the trailing bytes.
 fn pre_hash(s: &str) -> Result<[u8; 32], hex::FromHexError> {
     let mut out = [0u8; 32];
-    hex::decode_to_slice(format!("{:0>64}", s.strip_prefix("0x").unwrap_or(s)), &mut out)?;
+    hex::decode_to_slice(
+        format!("{:0>64}", s.strip_prefix("0x").unwrap_or(s)),
+        &mut out,
+    )?;
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::WorkerMode;
+    use crate::upstream::Endpoint;
+
+    fn endpoint(url: &str) -> Endpoint {
+        url.parse().expect("valid endpoint")
+    }
+
+    #[test]
+    fn auto_separates_devices_for_stratum() {
+        assert!(WorkerMode::Auto.per_device(&[endpoint("stratum+ssl://pool.example:1234")]));
+        assert!(!WorkerMode::Auto.per_device(&[endpoint("ws://127.0.0.1:9944")]));
+    }
+
+    #[test]
+    fn explicit_modes_override_detection() {
+        let node = [endpoint("ws://127.0.0.1:9944")];
+        let pool = [endpoint("stratum+tcp://pool.example:1234")];
+        assert!(WorkerMode::Device.per_device(&node));
+        assert!(!WorkerMode::Rig.per_device(&pool));
+    }
 }
