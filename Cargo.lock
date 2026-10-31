@@ -1331,7 +1331,7 @@ dependencies = [
 
 [[package]]
 name = "numen-harness"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "clap",
  "hex",
@@ -1346,7 +1346,7 @@ dependencies = [
 
 [[package]]
 name = "numen-kernel"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "libm",
  "rand_core 0.10.1",
@@ -1356,7 +1356,7 @@ dependencies = [
 
 [[package]]
 name = "numen-miner"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "adlx",
  "anyhow",

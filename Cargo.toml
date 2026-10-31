@@ -3,7 +3,7 @@ members = ["kernel", "miner", "harness"]
 resolver = "2"
 
 [workspace.package]
-version = "1.0.0"
+version = "1.1.0"
 license = "MIT"
 authors = ["numen-network"]
 edition = "2024"
